@@ -1,11 +1,9 @@
 import gym
+from gym.utils import seeding
 import numpy as np
 import numpy.linalg as linalg
 
-from gym.utils import seeding
-
 import gym_auv.utils.geomutils as geom
-
 from gym_auv.objects.auv import AUV2D
 from gym_auv.objects.path import RandomCurveThroughOrigin
 from gym_auv.objects.obstacles import StaticObstacle
@@ -122,12 +120,10 @@ class AUVEnv(gym.Env):
         obst_range = self.config["obst_range"]
 
         closest_point = self.path(self.path_prog)
-        closest_angle = self.path.get_direction(self.path_prog)
         target_angle = self.path.get_direction(self.path_prog + los_dist)
 
         heading_error = float(geom.princip(target_angle - self.vessel.heading))
-        cross_track_error = geom.Rzyx(0, 0, -closest_angle).dot(
-            np.hstack([closest_point - self.vessel.position, [0]]))[1]
+        cross_track_error = linalg.norm(closest_point - self.vessel.position)
 
         obs = np.zeros((self.nstates + self.nsectors,))
 
@@ -137,19 +133,19 @@ class AUVEnv(gym.Env):
         obs[3] = np.clip(self.last_action[0], -1, 1)
         obs[4] = np.clip(self.last_action[1], 0, 1)
 
-        distance_vecs = {i: (self.vessel.position - obst.position)
-                         for i, obst in enumerate(self.obstacles)}
-        for iobst, obst in enumerate(self.obstacles):
-            vec = distance_vecs[iobst]
-            dist = np.linalg.norm(vec)
+        for obst in self.obstacles:
+            distance_vec = geom.Rzyx(0, 0, -self.vessel.heading).dot(
+                np.hstack([obst.position - self.vessel.position, 0]))
+            dist = np.linalg.norm(distance_vec)
             if dist < obst_range:
                 ang = (float(geom.princip(
-                    np.arctan2(vec[1], vec[0]) - self.vessel.heading)) + np.pi/2)/np.pi
+                    np.arctan2(distance_vec[1], distance_vec[0])))
+                       + np.pi/2) / np.pi
                 if 0 <= ang < 1:
                     closeness = 1 - np.clip((dist - self.vessel.radius - obst.radius)
                                             / obst_range, 0, 1)
                     isector = self.nstates + int(np.floor(ang*self.nsectors))
-                    if obs[isector] > closeness:
+                    if obs[isector] < closeness:
                         obs[isector] = closeness
 
         return obs
@@ -157,3 +153,6 @@ class AUVEnv(gym.Env):
 
     def seed(self, seed=5):
         self.np_random, _ = seeding.np_random(seed)
+
+    def render(self):
+        pass
