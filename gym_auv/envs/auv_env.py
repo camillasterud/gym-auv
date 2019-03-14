@@ -9,10 +9,11 @@ from gym_auv.objects.path import RandomCurveThroughOrigin
 from gym_auv.objects.obstacles import StaticObstacle
 
 class AUVEnv(gym.Env):
+    metadata = {}
 
     def __init__(self, env_config):
         self.config = env_config
-        self.nstates = 4
+        self.nstates = 5
         self.nsectors = 4
         nactions = 2
         nobservations = self.nstates + self.nsectors
@@ -43,13 +44,13 @@ class AUVEnv(gym.Env):
         delta_path_prog, self.path_prog = path_prog - self.path_prog, path_prog
 
         obs = self.observe()
-        done, step_reward = self.step_reward(action, obs, delta_path_prog)
+        done, step_reward = self.step_reward(obs, delta_path_prog)
         info = {}
         self.reward += step_reward
 
         return obs, step_reward, done, info
 
-    def step_reward(self, action, obs, delta_path_prog):
+    def step_reward(self, obs, delta_path_prog):
         done = False
         step_reward = 0
 
@@ -115,6 +116,8 @@ class AUVEnv(gym.Env):
 
         self.generate()
 
+        return self.observe()
+
     def observe(self):
         los_dist = self.config["los_dist"]
         obst_range = self.config["obst_range"]
@@ -147,12 +150,12 @@ class AUVEnv(gym.Env):
                     isector = self.nstates + int(np.floor(ang*self.nsectors))
                     if obs[isector] < closeness:
                         obs[isector] = closeness
-
         return obs
 
 
     def seed(self, seed=5):
-        self.np_random, _ = seeding.np_random(seed)
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
 
-    def render(self):
+    def render(self, mode='human'):
         pass
