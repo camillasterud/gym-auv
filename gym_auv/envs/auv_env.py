@@ -123,18 +123,21 @@ class AUVEnv(gym.Env):
         obst_range = self.config["obst_range"]
 
         closest_point = self.path(self.path_prog)
-        target_angle = self.path.get_direction(self.path_prog + los_dist)
+        path_direction = self.path.get_direction(self.path_prog)
+        target_heading = self.path.get_direction(self.path_prog + los_dist)
 
-        heading_error = float(geom.princip(target_angle - self.vessel.heading))
-        cross_track_error = linalg.norm(closest_point - self.vessel.position)
+        heading_error = float(geom.princip(target_heading - self.vessel.heading))
+
+        cross_track_error = geom.Rzyx(0, 0, -path_direction).dot(
+            np.hstack([closest_point - self.vessel.position, 0]))[1]
 
         obs = np.zeros((self.nstates + self.nsectors,))
 
         obs[0] = np.clip(linalg.norm(self.vessel.velocity) / self.vessel.max_speed, 0, 1)
         obs[1] = np.clip(heading_error / np.pi, -1, 1)
         obs[2] = np.clip(cross_track_error / los_dist, -1, 1)
-        obs[3] = np.clip(self.last_action[0], -1, 1)
-        obs[4] = np.clip(self.last_action[1], 0, 1)
+        obs[3] = np.clip(self.last_action[0], 0, 1)
+        obs[4] = np.clip(self.last_action[1], -1, 1)
 
         for obst in self.obstacles:
             distance_vec = geom.Rzyx(0, 0, -self.vessel.heading).dot(
