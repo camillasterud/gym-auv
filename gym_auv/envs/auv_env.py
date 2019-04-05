@@ -85,9 +85,8 @@ class AUVEnv(gym.Env):
                 The desired cruising speed.
         """
         self.config = env_config
-        self.nstates = 4
-        self.nsectors = 8
-        nactions = 2
+        self.nstates = 6
+        self.nsectors = 16
         nobservations = self.nstates + self.nsectors
         self.vessel = None
         self.goal = None
@@ -102,27 +101,26 @@ class AUVEnv(gym.Env):
 
         self.reset()
 
-        self.action_space = gym.spaces.Box(low=np.array([-1]*nactions),
-                                           high=np.array([+1]*nactions),
+        self.action_space = gym.spaces.Box(low=np.array([0, -1]),
+                                           high=np.array([1, 1]),
                                            dtype=np.float32)
         self.observation_space = gym.spaces.Box(
             low=np.array([-1]*nobservations),
-            high=np.array([-1]*nobservations),
+            high=np.array([1]*nobservations),
             dtype=np.float32)
 
     def step(self, action):
         self.steps += 1
-        self.last_action = action
         self.vessel.step(action)
 
         last_dist = self.goal_dist
         self.goal_dist = linalg.norm(self.vessel.position - self.goal)
         progress = last_dist - self.goal_dist
 
-        obs = self.observe()
+        obs = self.observe(action)
         done, step_reward = self.step_reward(obs, progress)
+        self.last_action = obs[4:6]
         info = {}
-        self.reward += step_reward
 
         return obs, step_reward, done, info
 
@@ -130,47 +128,58 @@ class AUVEnv(gym.Env):
         done = False
         step_reward = 0
 
-        if (self.reward < -300
-                or self.goal_dist > 2*self.config["goal_dist"]
-                or self.steps > 10000):
+        step_reward += progress*self.config["reward_ds"]
+        surge_error = (obs[0] - self.config["cruise_speed"]
+                       /self.vessel.max_speed)
+        step_reward += (abs(surge_error)
+                        *self.config["reward_surge_error"])
+        step_reward += (abs(obs[5] - self.last_action[1])
+                        *self.config["reward_rudderchange"])
+        for sector in range(self.nsectors):
+            closeness = obs[self.nstates + sector]
+            dist = self.config["obst_detection_range"]*(1  - closeness)
+            reward_range = self.config["obst_reward_range"]
+            if closeness >= 1:
+                step_reward = self.config["reward_collision"]
+            elif dist < reward_range:
+                step_reward += ((1 - dist/reward_range)
+                                *self.config["reward_closeness"])
+
+        self.reward += step_reward
+
+        if (self.reward < self.config["min_reward"]
+                or self.goal_dist > 3*self.config["goal_dist"]
+                or self.steps >= 20000):
             done = True
         if not done and abs(self.goal_dist) < 10:
             step_reward = self.config["reward_goal"]
+            self.reward += step_reward
             done = True
-
-        if not done:
-            step_reward += progress*self.config["reward_ds"]
-            surge_error = (obs[0] - self.config["cruise_speed"]
-                           /self.vessel.max_speed)
-            step_reward += (max(0, -surge_error)
-                            *self.config["reward_surge_error"])
-            for sector in range(self.nsectors):
-                closeness = obs[self.nstates + sector]
-                if closeness > 0.99:
-                    step_reward = self.config["reward_collision"]
 
         return done, step_reward
 
     def generate(self):
-
         init_pos = np.array([0, 0])
-        init_angle = np.pi*(self.np_random.rand()-0.5)
-
-        goal_angle = np.pi*(self.np_random.rand()-0.5)
+        init_angle = 2*np.pi*(self.np_random.rand()-0.5)
+        goal_angle = 2*np.pi*(self.np_random.rand()-0.5)
 
         self.goal = self.config["goal_dist"]*np.array(
             [np.cos(goal_angle), np.sin(goal_angle)])
-
         self.vessel = AUV2D(self.config["t_step"],
                             np.hstack([init_pos, init_angle]))
-        self.last_action = np.array([0, 0])
 
         for _ in range(self.config["nobstacles"]):
-            position = (0.9*self.config["goal_dist"]
-                        *(self.np_random.rand(2) - 0.5))
+            obst_dist = (0.75*self.config["goal_dist"]
+                         *(self.np_random.rand() + 0.2))
+            obst_ang = (goal_angle
+                        + 360*2*np.pi/360*(self.np_random.rand()-0.5))
+            position = (obst_dist*np.array(
+                [np.cos(obst_ang), np.sin(obst_ang)]))
             if linalg.norm(position) < 50:
                 position[0] = np.sign(position[0])*50
-            radius = 25*(self.np_random.rand()+0.5)
+                if position[0] == 0:
+                    position[0] = 50
+            radius = 15*(self.np_random.rand()+0.5)
             self.obstacles.append(StaticObstacle(position, radius))
 
     def reset(self):
@@ -180,16 +189,16 @@ class AUVEnv(gym.Env):
         self.reward = 0
         self.goal_dist = self.config["goal_dist"]
         self.steps = 0
-
+        self.last_action = np.array([0, 0])
         if self.np_random is None:
             self.seed()
 
         self.generate()
 
-        return self.observe()
+        return self.observe(self.last_action)
 
-    def observe(self):
-        obst_range = self.config["obst_range"]
+    def observe(self, action):
+        obst_range = self.config["obst_detection_range"]
 
         goal_vector = self.goal - self.vessel.position
         goal_direction = np.arctan2(goal_vector[1], goal_vector[0])
@@ -203,23 +212,23 @@ class AUVEnv(gym.Env):
         obs[2] = np.clip(heading_error / np.pi, -1, 1)
         obs[3] = np.clip(self.goal_dist / (2*self.config["goal_dist"]),
                          0, 1)
-
+        obs[4] = np.clip(action[0], 0, 1)
+        obs[5] = np.clip(action[1], -1, 1)
         for obst in self.obstacles:
             distance_vec = geom.Rzyx(0, 0, -self.vessel.heading).dot(
                 np.hstack([obst.position - self.vessel.position, 0]))
             dist = linalg.norm(distance_vec)
             if dist < obst_range + obst.radius + self.vessel.radius:
-                ang = (float(geom.princip(
-                    np.arctan2(distance_vec[1], distance_vec[0])))
-                       + np.pi) / (2*np.pi)
-                if 0 <= ang < 1:
-                    closeness = 1 - np.clip((dist - self.vessel.radius
-                                             - obst.radius)/obst_range,
-                                            0, 1)
-                    isector = (self.nstates
-                               + int(np.floor(ang*self.nsectors)))
-                    if obs[isector] < closeness:
-                        obs[isector] = closeness
+                ang = ((float(np.arctan2(
+                    distance_vec[1], distance_vec[0]))
+                        + np.pi) / (2*np.pi))
+                closeness = 1 - np.clip((dist - self.vessel.radius
+                                         - obst.radius)/obst_range,
+                                        0, 1)
+                isector = (self.nstates
+                           + int(np.floor(ang*self.nsectors)))
+                if obs[isector] < closeness:
+                    obs[isector] = closeness
         return obs
 
 
