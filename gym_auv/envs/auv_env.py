@@ -1,11 +1,11 @@
 """
 This module implements the AUV gym environment through the AUVenv class.
 """
+import numpy as np
+import numpy.linalg as linalg
 
 import gym
 from gym.utils import seeding
-import numpy as np
-import numpy.linalg as linalg
 
 import gym_auv.utils.geomutils as geom
 from gym_auv.objects.auv import AUV2D
@@ -18,9 +18,7 @@ class AUVEnv(gym.Env):
     Attributes
     ----------
     config : dict
-        The configuration disctionary specifying rewards,
-        number of obstacles, LOS distance, obstacle detection range,
-        simulation timestep and desired cruising speed.
+        The configuration dictionary.
     nstates : int
         The number of state variables passed to the agent.
     nsectors : int
@@ -28,20 +26,24 @@ class AUVEnv(gym.Env):
     vessel : gym_auv.objects.auv.AUV2D
         The AUV that is controlled by the agent.
     goal : np.array
-        The goal coordinate.
+        The goal position.
     np_random : np.random.RandomState
         Random number generator.
     obstacles : list
-        List of obstacles.
+        List of obstacles of type
+        gym_auv.objects.obstacles.StaticObstacle.
     reward : float
         The accumulated reward.
     goal_dist : float
         The distance to the goal.
     last_action : np.array
         The last action that was preformed.
+    steps : int
+        Number of timesteps passed.
     action_space : gym.spaces.Box
-        The action space. Consists of two floats that must take on
-        values between -1 and 1.
+        The action space. Consists of two floats, where the first, the
+        propeller input can be between 0 and 1, and the second, the
+        rudder position, can be between -1 and 1.
     observation_space : gym.spaces.Box
         The observation space. Consists of
         self.nstates + self.nsectors floats that must be between
@@ -58,31 +60,45 @@ class AUVEnv(gym.Env):
         Parameters
         ----------
         env_config : dict
-            env_config should contain the following members:
+            Configuration parameters for the environment.
+            Must have the following members:
             reward_ds
-                The reward for progressing towards the goal.
+                The reward for moving one unit of length towards the
+                goal.
             reward_closeness
-                The reward for the closest obstacle within each
-                sector. reward += reward_closeness*closeness.
-            reward_surge_error
-                The reward for going faster than the cruise_speed.
-                reward += reward_surge_error*speeding_error
-            reward_cross_track_error
-                The reward for the cross track error at each timestep.
-                reward += reward_cross_track_error*cross_track_error
+                reward += reward_closeness*closeness for the closest
+                obstacle within each sector.
+            reward_speed_error
+                reward += reward_speed_error*speed_error where the
+                speed error is abs(speed-cruise_speed)/max_speed.
             reward_collision
                 The reward for colliding with an obstacle.
                 reward += reward_collisions
             nobstacles
                 The number of obstacles.
-            los_dist
-                The line of sight distance.
-            obst_range
-                The obstacle detection range.
+            obst_detection_range
+                The maximum distance at which an obstacle can be
+                detected.
+            obst_reward_range
+                The distance where closeness to an obstacle starts
+                getting punished.
             t_step
-                The timestep
+                The simulation timestep.
             cruise_speed
                 The desired cruising speed.
+            goal_dist
+                The distance from the initial vessel position to
+                the goal.
+            reward_goal
+                The reward for reaching the goal. reward += reward_goal
+            reward_rudderchange
+                The reward for changing the rudder position.
+                reward += reward_rudderchange*rudderchange where
+                0 <= rudderchange<= 1.
+            min_reward
+                The minimum reward the vessel can accumulate. If the
+                accumulated reward is less than min_reward, the episode
+                ends.
         """
         self.config = env_config
         self.nstates = 6
@@ -110,6 +126,27 @@ class AUVEnv(gym.Env):
             dtype=np.float32)
 
     def step(self, action):
+        """
+        Simulates the environment for one timestep when action
+        is performed
+
+        Parameters
+        ----------
+        action : np.array
+            [propeller_input, rudder_position].
+
+        Returns
+        -------
+        obs : np.array
+            Observation of the environment after action is performed.
+        step_reward : double
+            The reward for performing action at his timestep.
+        done : bool
+            If True the episode is ended.
+        info : dict
+            Empty, is included because it is required of the
+            OpenAI Gym frameowrk.
+        """
         self.steps += 1
         self.vessel.step(action)
 
@@ -125,6 +162,24 @@ class AUVEnv(gym.Env):
         return obs, step_reward, done, info
 
     def step_reward(self, obs, progress):
+        """
+        Calculates the step_reward and decides whether the episode
+        should be ended.
+
+        Parameters
+        ----------
+        obs : np.array
+            The observation of the environment.
+        progress : double
+            How much the vessel has moved towards the goal in the
+            last timestep.
+        Returns
+        -------
+        done : bool
+            If True the episode is ended.
+        step_reward : double
+            The reward for performing action at his timestep.
+        """
         done = False
         step_reward = 0
 
@@ -132,7 +187,7 @@ class AUVEnv(gym.Env):
         surge_error = (obs[0] - self.config["cruise_speed"]
                        /self.vessel.max_speed)
         step_reward += (abs(surge_error)
-                        *self.config["reward_surge_error"])
+                        *self.config["reward_speed_error"])
         step_reward += (abs(obs[5] - self.last_action[1])
                         *self.config["reward_rudderchange"])
         for sector in range(self.nsectors):
@@ -159,6 +214,10 @@ class AUVEnv(gym.Env):
         return done, step_reward
 
     def generate(self):
+        """
+        Sets up the environment. Places the goal and obstacles and
+        creates the AUV.
+        """
         init_pos = np.array([0, 0])
         init_angle = 2*np.pi*(self.np_random.rand()-0.5)
         goal_angle = 2*np.pi*(self.np_random.rand()-0.5)
@@ -183,6 +242,14 @@ class AUVEnv(gym.Env):
             self.obstacles.append(StaticObstacle(position, radius))
 
     def reset(self):
+        """
+        Resets the environment by reseeding and calling self.generate.
+
+        Returns
+        -------
+        obs : np.array
+            The initial observation of the environment.
+        """
         self.vessel = None
         self.goal = None
         self.obstacles = []
@@ -198,6 +265,27 @@ class AUVEnv(gym.Env):
         return self.observe(self.last_action)
 
     def observe(self, action):
+        """
+        Generates the observation of the environment.
+        Parameters
+        ----------
+        action : np.array
+            [propeller_input, rudder_position].
+
+        Returns
+        -------
+        obs : np.array
+            [
+            surge velocity,
+            sway velocity,
+            heading error,
+            distance to goal,
+            propeller_input,
+            rudder_positione,
+            self.nsectors*[closeness to closest obstacle in sector]
+            ]
+            All observations are between -1 and 1.
+        """
         obst_range = self.config["obst_detection_range"]
 
         goal_vector = self.goal - self.vessel.position
@@ -233,8 +321,15 @@ class AUVEnv(gym.Env):
 
 
     def seed(self, seed=5):
+        """
+        Sets the self.np_random random number generator and
+        returns a random seed.
+        """
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
 
     def render(self, mode='human'):
-        pass
+        """
+        Not implemented.
+        """
+        return
