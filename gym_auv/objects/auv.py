@@ -57,17 +57,19 @@ class AUV2D():
         self.input = np.array([_surge(action[0]), _steer(action[1])])
         self._sim()
 
-        if linalg.norm(self.position - self.path_taken[-1]) > 3:
+        if linalg.norm(self.position - self.path_taken[-1]) > 1:
             self.path_taken = np.vstack([self.path_taken,
                                          self.position])
 
     def _sim(self):
-        _, _, psi, u, v, r = self._state
-        nu = np.array([u, v, r])
+        psi = self._state[2]
+        nu = self._state[3:]
 
         eta_dot = geom.Rzyx(0, 0, geom.princip(psi)).dot(nu)
-        nu_dot = const.M_inv.dot(const.B(u).dot(self.input)
-                                 - const.D(u, v, r).dot(nu))
+        nu_dot = const.M_inv.dot(const.B(nu).dot(self.input)
+                                 - const.D(nu).dot(nu)
+                                 - const.C(nu).dot(nu)
+                                 - const.L(nu).dot(nu))
         state_dot = np.concatenate([eta_dot, nu_dot])
         self._state += state_dot*self.t_step
 

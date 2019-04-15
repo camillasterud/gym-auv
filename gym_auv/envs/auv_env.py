@@ -184,9 +184,10 @@ class AUVEnv(gym.Env):
         step_reward = 0
 
         step_reward += progress*self.config["reward_ds"]
-        surge_error = (obs[0] - self.config["cruise_speed"]
+        speed_error = ((linalg.norm(self.vessel.velocity)
+                        - self.config["cruise_speed"])
                        /self.vessel.max_speed)
-        step_reward += (abs(surge_error)
+        step_reward += (abs(speed_error)
                         *self.config["reward_speed_error"])
         step_reward += (abs(obs[5] - self.last_action[1])
                         *self.config["reward_rudderchange"])
@@ -295,7 +296,7 @@ class AUVEnv(gym.Env):
         obs = np.zeros((self.nstates + self.nsectors,))
 
         obs[0] = np.clip(self.vessel.velocity[0]
-                         /self.vessel.max_speed, 0, 1)
+                         /self.vessel.max_speed, -1, 1)
         obs[1] = np.clip(self.vessel.velocity[1] / 0.2, -1, 1)
         obs[2] = np.clip(heading_error / np.pi, -1, 1)
         obs[3] = np.clip(self.goal_dist / (2*self.config["goal_dist"]),
