@@ -207,7 +207,7 @@ class AUVEnv(gym.Env):
                 or self.goal_dist > 3*self.config["goal_dist"]
                 or self.steps >= 20000):
             done = True
-        if not done and abs(self.goal_dist) < 10:
+        if not done and abs(self.goal_dist) < 5:
             step_reward = self.config["reward_goal"]
             self.reward += step_reward
             done = True
