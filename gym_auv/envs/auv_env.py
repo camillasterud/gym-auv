@@ -87,10 +87,9 @@ class AUVEnv(gym.Env):
                 The desired cruising speed.
         """
         self.config = env_config
-        self.nstates = 6
-        self.nsectors = 8
+        self.nstates = 7
         nactions = 2
-        nobservations = self.nstates + self.nsectors
+        nobservations = self.nstates
         self.vessel = None
         self.path = None
 
@@ -122,7 +121,6 @@ class AUVEnv(gym.Env):
         obs = self.observe()
         done, step_reward = self.step_reward(obs, delta_path_prog)
         info = {}
-        self.reward += step_reward
 
         return obs, step_reward, done, info
 
@@ -130,39 +128,26 @@ class AUVEnv(gym.Env):
         done = False
         step_reward = 0
 
-        if not done and self.reward < -300:
-            done = True
+        step_reward += delta_path_prog*self.config["reward_ds"]
+        speed_error = ((linalg.norm(self.vessel.velocity)
+                        - self.config["cruise_speed"])
+                       /self.vessel.max_speed)
+        cross_track_error = obs[4]
 
-        if not done and abs(self.path_prog - self.path.length) < 1:
-            done = True
+        step_reward += (abs(cross_track_error)
+                        *self.config["reward_cross_track_error"])
+        step_reward += (abs(speed_error)
+                        *self.config["reward_speed_error"])
 
-        #for obst in self.obstacles:
-        #    dist = linalg.norm(self.vessel.position - obst.position)
-        #    if not done and dist < self.vessel.radius + obst.radius:
-            #    done = True
-            #    step_reward += self.config["reward_collision"]
-            #    break
         dist_to_endpoint = linalg.norm(self.vessel.position
                                        - self.path.get_endpoint())
-        if not done and dist_to_endpoint < 10:
+
+        self.reward += step_reward
+
+        if (self.reward < -300
+            or abs(self.path_prog - self.path.length) < 1
+            or dist_to_endpoint < 5):
             done = True
-
-        if not done:
-            step_reward += delta_path_prog*self.config["reward_ds"]
-
-        for sector in range(self.nsectors):
-            closeness = obs[self.nstates + sector]
-            step_reward += self.config["reward_closeness"]*closeness**2
-
-        if not done:
-            surge_error = (obs[0] - self.config["cruise_speed"]
-                           /self.vessel.max_speed)
-            cross_track_error = obs[3]
-
-            step_reward += (abs(cross_track_error)
-                            *self.config["reward_cross_track_error"])
-            step_reward += (max(0, -surge_error)
-                            *self.config["reward_surge_error"])
 
         return done, step_reward
 
@@ -180,13 +165,6 @@ class AUVEnv(gym.Env):
                             np.hstack([init_pos, init_angle]))
         self.last_action = np.array([0, 0])
 
-        for _ in range(self.config["nobstacles"]):
-            position = (self.path(0.9*self.path.length
-                                  *(self.np_random.rand() + 0.1))
-                        + 25*(self.np_random.rand(2)-0.5))
-            radius = 10*(self.np_random.rand()+0.5)
-            self.obstacles.append(StaticObstacle(position, radius))
-
     def reset(self):
         self.vessel = None
         self.path = None
@@ -203,7 +181,6 @@ class AUVEnv(gym.Env):
 
     def observe(self):
         los_dist = self.config["los_dist"]
-        obst_range = self.config["obst_range"]
 
         path_direction = self.path.get_direction(self.path_prog)
         target_heading = self.path.get_direction(
@@ -216,32 +193,17 @@ class AUVEnv(gym.Env):
             np.hstack([self.path(self.path_prog)
                        - self.vessel.position, 0]))[1]
 
-        obs = np.zeros((self.nstates + self.nsectors,))
+        obs = np.zeros((self.nstates,))
 
         obs[0] = np.clip(self.vessel.velocity[0]
                          /self.vessel.max_speed, 0, 1)
-        obs[1] = np.clip(self.vessel.velocity[1] / 0.2, -1, 1)
-        obs[2] = np.clip(heading_error / np.pi, -1, 1)
-        obs[3] = np.clip(cross_track_error / los_dist, -1, 1)
-        obs[4] = np.clip(self.last_action[0], 0, 1)
-        obs[5] = np.clip(self.last_action[1], -1, 1)
+        obs[1] = np.clip(self.vessel.velocity[1] / 0.26, -1, 1)
+        obs[2] = np.clip(self.vessel.yawrate / 0.55, -1, 1)
+        obs[3] = np.clip(heading_error / np.pi, -1, 1)
+        obs[4] = np.clip(cross_track_error / los_dist, -1, 1)
+        obs[5] = np.clip(self.last_action[0], 0, 1)
+        obs[6] = np.clip(self.last_action[1], -1, 1)
 
-        for obst in self.obstacles:
-            distance_vec = geom.Rzyx(0, 0, -self.vessel.heading).dot(
-                np.hstack([obst.position - self.vessel.position, 0]))
-            dist = np.linalg.norm(distance_vec)
-            if dist < obst_range + obst.radius:
-                ang = (float(geom.princip(
-                    np.arctan2(distance_vec[1], distance_vec[0])))
-                       + np.pi) / (2*np.pi)
-                if 0 <= ang < 1:
-                    closeness = 1 - np.clip((dist - self.vessel.radius
-                                             - obst.radius)/obst_range,
-                                            0, 1)
-                    isector = (self.nstates
-                               + int(np.floor(ang*self.nsectors)))
-                    if obs[isector] < closeness:
-                        obs[isector] = closeness
         return obs
 
 

@@ -59,6 +59,11 @@ class AUV2D():
         return self._state[3:5]
 
     @property
+    def yawrate(self):
+        return self._state[5]
+    
+
+    @property
     def max_speed(self):
         return const.MAX_SPEED
 
