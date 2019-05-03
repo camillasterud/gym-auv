@@ -101,7 +101,7 @@ class AUVEnv(gym.Env):
                 ends.
         """
         self.config = env_config
-        self.nstates = 6
+        self.nstates = 7
         self.nsectors = 16
         nobservations = self.nstates + self.nsectors
         self.vessel = None
@@ -156,7 +156,7 @@ class AUVEnv(gym.Env):
 
         obs = self.observe(action)
         done, step_reward = self.step_reward(obs, progress)
-        self.last_action = obs[4:6]
+        self.last_action = obs[5:7]
         info = {}
 
         return obs, step_reward, done, info
@@ -189,7 +189,7 @@ class AUVEnv(gym.Env):
                        /self.vessel.max_speed)
         step_reward += (abs(speed_error)
                         *self.config["reward_speed_error"])
-        step_reward += (abs(obs[5] - self.last_action[1])
+        step_reward += (abs(obs[6] - self.last_action[1])
                         *self.config["reward_rudderchange"])
         for sector in range(self.nsectors):
             closeness = obs[self.nstates + sector]
@@ -297,12 +297,13 @@ class AUVEnv(gym.Env):
 
         obs[0] = np.clip(self.vessel.velocity[0]
                          /self.vessel.max_speed, -1, 1)
-        obs[1] = np.clip(self.vessel.velocity[1] / 0.2, -1, 1)
-        obs[2] = np.clip(heading_error / np.pi, -1, 1)
-        obs[3] = np.clip(self.goal_dist / (2*self.config["goal_dist"]),
+        obs[1] = np.clip(self.vessel.velocity[1] / 0.26, -1, 1)
+        obs[2] = np.clip(self.vessel.yawrate / 0.55, -1, 1)
+        obs[3] = np.clip(heading_error / np.pi, -1, 1)
+        obs[4] = np.clip(self.goal_dist / (2*self.config["goal_dist"]),
                          0, 1)
-        obs[4] = np.clip(action[0], 0, 1)
-        obs[5] = np.clip(action[1], -1, 1)
+        obs[5] = np.clip(action[0], 0, 1)
+        obs[6] = np.clip(action[1], -1, 1)
         for obst in self.obstacles:
             distance_vec = geom.Rzyx(0, 0, -self.vessel.heading).dot(
                 np.hstack([obst.position - self.vessel.position, 0]))

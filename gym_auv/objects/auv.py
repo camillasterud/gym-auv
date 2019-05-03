@@ -96,6 +96,13 @@ class AUV2D():
         return self._state[3:5]
 
     @property
+    def yawrate(self):
+        """
+        Returns the rate of rotation about the z-axis.
+        """
+        return self._state[5]
+
+    @property
     def max_speed(self):
         """
         Returns the max speed of the AUV.
