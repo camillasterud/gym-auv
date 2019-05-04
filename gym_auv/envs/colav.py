@@ -11,7 +11,7 @@ import gym_auv.utils.geomutils as geom
 from gym_auv.objects.auv import AUV2D
 from gym_auv.objects.obstacles import StaticObstacle
 
-class AUVEnv(gym.Env):
+class ColavEnv(gym.Env):
     """
     Creates an environment with a vessel, goal and obstacles.
 
@@ -89,8 +89,6 @@ class AUVEnv(gym.Env):
             goal_dist
                 The distance from the initial vessel position to
                 the goal.
-            reward_goal
-                The reward for reaching the goal. reward += reward_goal
             reward_rudderchange
                 The reward for changing the rudder position.
                 reward += reward_rudderchange*rudderchange where
@@ -205,11 +203,8 @@ class AUVEnv(gym.Env):
 
         if (self.reward < self.config["min_reward"]
                 or self.goal_dist > 3*self.config["goal_dist"]
-                or self.steps >= 20000):
-            done = True
-        if not done and abs(self.goal_dist) < 5:
-            step_reward = self.config["reward_goal"]
-            self.reward += step_reward
+                or self.steps >= 20000
+                or abs(self.goal_dist) < 5):
             done = True
 
         return done, step_reward
