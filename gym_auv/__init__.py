@@ -18,8 +18,10 @@ CONFIG_COLAV = {
 CONFIG_PATHFOLLOWING = {
     "reward_ds": 1,
     "reward_speed_error": -0.08,
+    "reward_cross_track_error": -0.5,
     "t_step": 0.1,
     "cruise_speed": 1.5,
+    "la_dist": 10,
     "goal_dist": 400,
     "reward_rudderchange": 0,
     "min_reward": -500

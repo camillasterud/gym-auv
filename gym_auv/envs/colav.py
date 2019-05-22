@@ -99,7 +99,7 @@ class ColavEnv(gym.Env):
                 ends.
         """
         self.config = env_config
-        self.nstates = 7
+        self.nstates = 4
         self.nsectors = 16
         nobservations = self.nstates + self.nsectors
         self.vessel = None
@@ -109,9 +109,10 @@ class ColavEnv(gym.Env):
         self.obstacles = None
 
         self.reward = 0
-        self.goal_dist = 0
-        self.last_action = None
-        self.steps = 0
+        self.goal_dist = None
+        self.past_obs = None
+        self.past_actions = None
+        self.t_step = None
 
         self.reset()
 
@@ -145,21 +146,20 @@ class ColavEnv(gym.Env):
             Empty, is included because it is required of the
             OpenAI Gym frameowrk.
         """
-        self.steps += 1
+        self.past_actions = np.vstack([self.past_actions, action])
         self.vessel.step(action)
 
         last_dist = self.goal_dist
         self.goal_dist = linalg.norm(self.vessel.position - self.goal)
         progress = last_dist - self.goal_dist
 
-        obs = self.observe(action)
-        done, step_reward = self.step_reward(obs, progress)
-        self.last_action = obs[5:7]
-        info = {}
+        obs = self.observe()
+        self.past_obs = np.vstack([self.past_obs, obs])
+        done, step_reward, info = self.step_reward(progress)
 
         return obs, step_reward, done, info
 
-    def step_reward(self, obs, progress):
+    def step_reward(self, progress):
         """
         Calculates the step_reward and decides whether the episode
         should be ended.
@@ -180,21 +180,26 @@ class ColavEnv(gym.Env):
         """
         done = False
         step_reward = 0
+        info = {"collision": False}
 
-        step_reward += progress*self.config["reward_ds"]
+        max_prog = self.config["cruise_speed"]*self.t_step
         speed_error = ((linalg.norm(self.vessel.velocity)
                         - self.config["cruise_speed"])
                        /self.vessel.max_speed)
-        step_reward += (abs(speed_error)
+        step_reward += (np.clip(progress/max_prog, -1, 1)
+                        *self.config["reward_ds"])
+        step_reward += (max(speed_error, 0)
                         *self.config["reward_speed_error"])
-        step_reward += (abs(obs[6] - self.last_action[1])
-                        *self.config["reward_rudderchange"])
+
         for sector in range(self.nsectors):
-            closeness = obs[self.nstates + sector]
-            dist = self.config["obst_detection_range"]*(1  - closeness)
+            closeness = self.past_obs[-1, self.nstates + sector]
+            dist = self.config["obst_detection_range"]*(1 - closeness)
             reward_range = self.config["obst_reward_range"]
             if closeness >= 1:
                 step_reward = self.config["reward_collision"]
+                info["collision"] = True
+                if self.config["end_on_collision"]:
+                    done = True
             elif dist < reward_range:
                 step_reward += ((1 - dist/reward_range)
                                 *self.config["reward_closeness"])
@@ -203,11 +208,11 @@ class ColavEnv(gym.Env):
 
         if (self.reward < self.config["min_reward"]
                 or self.goal_dist > 3*self.config["goal_dist"]
-                or self.steps >= 20000
+                or self.past_actions.shape[0] >= 20000
                 or abs(self.goal_dist) < 5):
             done = True
 
-        return done, step_reward
+        return done, step_reward, info
 
     def generate(self):
         """
@@ -217,17 +222,18 @@ class ColavEnv(gym.Env):
         init_pos = np.array([0, 0])
         init_angle = 2*np.pi*(self.np_random.rand()-0.5)
         goal_angle = 2*np.pi*(self.np_random.rand()-0.5)
+        self.t_step = self.config["t_step"]
 
         self.goal = self.config["goal_dist"]*np.array(
             [np.cos(goal_angle), np.sin(goal_angle)])
-        self.vessel = AUV2D(self.config["t_step"],
+        self.vessel = AUV2D(self.t_step,
                             np.hstack([init_pos, init_angle]))
 
         for _ in range(self.config["nobstacles"]):
             obst_dist = (0.75*self.config["goal_dist"]
                          *(self.np_random.rand() + 0.2))
             obst_ang = (goal_angle
-                        + 360*2*np.pi/360*(self.np_random.rand()-0.5))
+                        + 2*np.pi*(self.np_random.rand()-0.5))
             position = (obst_dist*np.array(
                 [np.cos(obst_ang), np.sin(obst_ang)]))
             if linalg.norm(position) < 50:
@@ -251,16 +257,18 @@ class ColavEnv(gym.Env):
         self.obstacles = []
         self.reward = 0
         self.goal_dist = self.config["goal_dist"]
-        self.steps = 0
-        self.last_action = np.array([0, 0])
+        self.past_actions = np.array([[0, 0]])
+        self.t_step = None
         if self.np_random is None:
             self.seed()
 
         self.generate()
 
-        return self.observe(self.last_action)
+        obs = self.observe()
+        self.past_obs = np.array([obs])
+        return obs
 
-    def observe(self, action):
+    def observe(self):
         """
         Generates the observation of the environment.
         Parameters
@@ -295,10 +303,6 @@ class ColavEnv(gym.Env):
         obs[1] = np.clip(self.vessel.velocity[1] / 0.26, -1, 1)
         obs[2] = np.clip(self.vessel.yawrate / 0.55, -1, 1)
         obs[3] = np.clip(heading_error / np.pi, -1, 1)
-        obs[4] = np.clip(self.goal_dist / (2*self.config["goal_dist"]),
-                         0, 1)
-        obs[5] = np.clip(action[0], 0, 1)
-        obs[6] = np.clip(action[1], -1, 1)
         for obst in self.obstacles:
             distance_vec = geom.Rzyx(0, 0, -self.vessel.heading).dot(
                 np.hstack([obst.position - self.vessel.position, 0]))
@@ -312,6 +316,8 @@ class ColavEnv(gym.Env):
                                         0, 1)
                 isector = (self.nstates
                            + int(np.floor(ang*self.nsectors)))
+                if isector == self.nstates + self.nsectors:
+                    isector = self.nstates
                 if obs[isector] < closeness:
                     obs[isector] = closeness
         return obs

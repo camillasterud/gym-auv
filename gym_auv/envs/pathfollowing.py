@@ -10,35 +10,30 @@ import numpy.linalg as linalg
 import gym_auv.utils.geomutils as geom
 from gym_auv.objects.auv import AUV2D
 from gym_auv.objects.path import RandomCurveThroughOrigin
-from gym_auv.objects.obstacles import StaticObstacle
 
 class PathFollowingEnv(gym.Env):
     """
-    Creates an environment with a vessel, path and obstacles.
+    Creates an environment with a vessel and a path.
     Attributes
     ----------
     config : dict
         The configuration disctionary specifying rewards,
-        number of obstacles, LOS distance, obstacle detection range,
-        simulation timestep and desired cruising speed.
+        look ahead distance, simulation timestep and desired cruise
+        speed.
     nstates : int
         The number of state variables passed to the agent.
-    nsectors : int
-        The number of obstacle detection sectors around the vessel.
     vessel : gym_auv.objects.auv.AUV2D
         The AUV that is controlled by the agent.
     path : gym_auv.objects.path.RandomCurveThroughOrigin
         The path to be followed.
     np_random : np.random.RandomState
         Random number generator.
-    obstacles : list
-        List of obstacles.
     reward : float
         The accumulated reward
     path_prog : float
         Progression along the path in terms of arc length covered.
-    last_action : np.array
-        The last action that was preformed.
+    past_actions : np.array
+        All actions that have been perfomed.
     action_space : gym.spaces.Box
         The action space. Consists of two floats that must take on
         values between -1 and 1.
@@ -68,26 +63,26 @@ class PathFollowingEnv(gym.Env):
                 speed error is abs(speed-cruise_speed)/max_speed.
             reward_cross_track_error
                 reward += reward_cross_track_error*cross_track_error
-            los_dist
-                The line of sight distance.
+            la_dist
+                The look ahead distance.
             t_step
                 The timestep
             cruise_speed
                 The desired cruising speed.
         """
         self.config = env_config
-        self.nstates = 7
-        nactions = 2
+        self.nstates = 6
         nobservations = self.nstates
         self.vessel = None
         self.path = None
 
         self.np_random = None
-        self.obstacles = None
 
         self.reward = 0
-        self.path_prog = 0
-        self.last_action = None
+        self.path_prog = None
+        self.past_actions = None
+        self.past_obs = None
+        self.t_step = None
 
         self.reset()
 
@@ -108,7 +103,6 @@ class PathFollowingEnv(gym.Env):
         ----------
         action : np.array
             [propeller_input, rudder_position].
-
         Returns
         -------
         obs : np.array
@@ -121,20 +115,22 @@ class PathFollowingEnv(gym.Env):
             Empty, is included because it is required of the
             OpenAI Gym frameowrk.
         """
-        self.last_action = action
+        action = np.clip(action, np.array([0, -1]), np.array([1, 1]))
+        self.past_actions = np.vstack([self.past_actions, action])
         self.vessel.step(action)
 
         prog = self.path.get_closest_arclength(self.vessel.position)
-        delta_path_prog = prog - self.path_prog
-        self.path_prog = prog
+        delta_path_prog = prog - self.path_prog[-1]
+        self.path_prog = np.append(self.path_prog, prog)
 
         obs = self.observe()
-        done, step_reward = self.step_reward(obs, delta_path_prog)
+        self.past_obs = np.vstack([self.past_obs, obs])
+        done, step_reward = self.step_reward(delta_path_prog)
         info = {}
 
         return obs, step_reward, done, info
 
-    def step_reward(self, obs, delta_path_prog):
+    def step_reward(self, delta_path_prog):
         """
         Calculates the step_reward and decides whether the episode
         should be ended.
@@ -144,7 +140,7 @@ class PathFollowingEnv(gym.Env):
         obs : np.array
             The observation of the environment.
         delta_path_prog : double
-            How much the vessel has cavered of the path arclength
+            How much the vessel has progressed along the path
             the last timestep.
         Returns
         -------
@@ -155,16 +151,15 @@ class PathFollowingEnv(gym.Env):
         """
         done = False
         step_reward = 0
-
-        step_reward += delta_path_prog*self.config["reward_ds"]
+        max_prog = self.config["cruise_speed"]*self.t_step
         speed_error = ((linalg.norm(self.vessel.velocity)
                         - self.config["cruise_speed"])
                        /self.vessel.max_speed)
-        cross_track_error = obs[4]
-
-        step_reward += (abs(cross_track_error)
+        step_reward += (np.clip(delta_path_prog/max_prog, -1, 1)
+                        *self.config["reward_ds"])
+        step_reward += (abs(self.past_obs[-1, -1])
                         *self.config["reward_cross_track_error"])
-        step_reward += (abs(speed_error)
+        step_reward += (max(speed_error, 0)
                         *self.config["reward_speed_error"])
 
         dist_to_endpoint = linalg.norm(self.vessel.position
@@ -173,7 +168,7 @@ class PathFollowingEnv(gym.Env):
         self.reward += step_reward
 
         if (self.reward < self.config["min_reward"]
-                or abs(self.path_prog - self.path.length) < 1
+                or abs(self.path_prog[-1] - self.path.length) < 2
                 or dist_to_endpoint < 5):
             done = True
 
@@ -181,20 +176,25 @@ class PathFollowingEnv(gym.Env):
 
     def generate(self):
         """
-        Sets up the environment. Places the goal and obstacles and
-        creates the AUV.
+        Sets up the environment. Generates the path and
+        initialises the AUV.
         """
-        self.path = RandomCurveThroughOrigin(rng=self.np_random)
+        nwaypoints = int(np.floor(9*self.np_random.rand() + 2))
+        self.path = RandomCurveThroughOrigin(self.np_random,
+                                             nwaypoints, 400)
 
         init_pos = self.path(0)
         init_angle = self.path.get_direction(0)
 
-        init_pos[0] += 2*(self.np_random.rand()-0.5)
-        init_pos[1] += 2*(self.np_random.rand()-0.5)
-        init_angle += 0.1*(self.np_random.rand()-0.5)
-        self.vessel = AUV2D(self.config["t_step"],
+        init_pos[0] += 50*(self.np_random.rand()-0.5)
+        init_pos[1] += 50*(self.np_random.rand()-0.5)
+        init_angle = geom.princip(init_angle
+                                  + 2*np.pi*(self.np_random.rand()-0.5))
+        self.t_step = self.config["t_step"]
+        self.vessel = AUV2D(self.t_step,
                             np.hstack([init_pos, init_angle]))
-        self.last_action = np.array([0, 0])
+        self.path_prog = np.array([
+            self.path.get_closest_arclength(self.vessel.position)])
 
     def reset(self):
         """
@@ -207,16 +207,18 @@ class PathFollowingEnv(gym.Env):
         """
         self.vessel = None
         self.path = None
-        self.obstacles = []
         self.reward = 0
-        self.path_prog = 0
+        self.path_prog = None
+        self.past_actions = np.array([[0, 0]])
+        self.t_step = None
 
         if self.np_random is None:
             self.seed()
 
         self.generate()
-
-        return self.observe()
+        obs = self.observe()
+        self.past_obs = np.array([obs])
+        return obs
 
     def observe(self):
         """
@@ -232,37 +234,40 @@ class PathFollowingEnv(gym.Env):
             [
             surge velocity,
             sway velocity,
+            yawrate,
             heading error,
-            distance to goal,
+            cross track error,
             propeller_input,
-            rudder_positione,
-            self.nsectors*[closeness to closest obstacle in sector]
+            rudder_position,
             ]
             All observations are between -1 and 1.
         """
-        la_dist = self.config["la_dist"]
-
-        path_direction = self.path.get_direction(self.path_prog)
-        target_heading = self.path.get_direction(
-            self.path_prog + la_dist)
-
+        la_heading = self.path.get_direction(
+            self.path_prog[-1] + self.config["la_dist"])
+        heading_error_la = float(geom.princip(la_heading
+                                              - self.vessel.heading))
+        path_position = (self.path(self.path_prog[-1]
+                                   + self.config["la_dist"])
+                         - self.vessel.position)
+        target_heading = np.arctan2(path_position[1], path_position[0])
         heading_error = float(geom.princip(target_heading
                                            - self.vessel.heading))
-
+        path_direction = self.path.get_direction(self.path_prog[-1])
         cross_track_error = geom.Rzyx(0, 0, -path_direction).dot(
-            np.hstack([self.path(self.path_prog)
+            np.hstack([self.path(self.path_prog[-1])
                        - self.vessel.position, 0]))[1]
 
         obs = np.zeros((self.nstates,))
 
         obs[0] = np.clip(self.vessel.velocity[0]
-                         /self.vessel.max_speed, 0, 1)
-        obs[1] = np.clip(self.vessel.velocity[1] / 0.26, -1, 1)
-        obs[2] = np.clip(self.vessel.yawrate / 0.55, -1, 1)
-        obs[3] = np.clip(heading_error / np.pi, -1, 1)
-        obs[4] = np.clip(cross_track_error / la_dist, -1, 1)
-        obs[5] = np.clip(self.last_action[0], 0, 1)
-        obs[6] = np.clip(self.last_action[1], -1, 1)
+                         /self.vessel.max_speed, -1, 1)
+        obs[1] = np.clip(self.vessel.velocity[1]
+                         /0.22, -1, 1)
+        obs[2] = np.clip(self.vessel.yawrate/0.55, -1, 1)
+        obs[3] = np.clip(heading_error_la/np.pi, -1, 1)
+        obs[4] = np.clip(heading_error/np.pi, -1, 1)
+        obs[5] = np.clip(cross_track_error
+                         /25, -1, 1)
 
         return obs
 

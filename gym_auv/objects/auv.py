@@ -39,7 +39,7 @@ class AUV2D():
             in meters. Defaults to 1.
         """
         self._state = np.hstack([init_pos, [0, 0, 0]])
-        self.path_taken = np.array([init_pos[0:2]])
+        self.prev_states = self._state
         self.radius = width
         self.t_step = t_step
         self.input = [0, 0]
@@ -57,9 +57,8 @@ class AUV2D():
         self.input = np.array([_surge(action[0]), _steer(action[1])])
         self._sim()
 
-        if linalg.norm(self.position - self.path_taken[-1]) > 1:
-            self.path_taken = np.vstack([self.path_taken,
-                                         self.position])
+        self.prev_states = np.vstack([self.prev_states,
+                                      self._state])
 
     def _sim(self):
         psi = self._state[2]
@@ -72,6 +71,7 @@ class AUV2D():
                                  - const.L(nu).dot(nu))
         state_dot = np.concatenate([eta_dot, nu_dot])
         self._state += state_dot*self.t_step
+        self._state[2] = geom.princip(self._state[2])
 
     @property
     def position(self):
